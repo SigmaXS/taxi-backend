@@ -4,51 +4,62 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-app.post('/api/v2/yandex/overlay-route', (req, res) => {
+async function getCoordinates(address) {
+    try {
+        if (!address) return null;
+        const clean = address.split('/')[0].trim();
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(clean + ", Кишинёв, Молдова")}&format=json&limit=1`;
+        const response = await fetch(url, { headers: { 'User-Agent': 'TaxiRadar/1.0' } });
+        const data = await response.json();
+        if (data && data.length > 0) {
+            return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+        }
+    } catch (e) {}
+    return null;
+}
+
+app.post('/api/v2/yandex/overlay-route', async (req, res) => {
     try {
         const { pickup_address, destination_address, classes } = req.body;
         
-        console.log("ПОЛУЧЕНО ОТ ТЕЛЕФОНА -> Откуда:", pickup_address, "| Куда:", destination_address);
+        console.log("Маршрут от:", pickup_address, "до:", destination_address);
 
-        let distanceKm = 3.0;
-        const p = (pickup_address || "").toLowerCase();
-        const d = (destination_address || "").toLowerCase();
+        let distanceKm = 4.0; // Дефолт на случай ошибки геокодера
+        let durationMin = 12;
 
-        // Проверяем дальние направления (например, Дурлешты, аэропорт, Чоканы)
-        if ((p.includes("дурлешт") || d.includes("дурлешт"))) {
-            distanceKm = 8.5; // Реальное расстояние из центра в Дурлешты
-        } else if (p.includes("дачия") && d.includes("сармизеджетусы")) {
-            distanceKm = 1.1;
-        } else if ((p.includes("ботаника") && d.includes("центр")) || (p.includes("центр") && d.includes("ботаника"))) {
-            distanceKm = 4.5;
-        } else {
-            const combined = p + d;
-            let hash = 0;
-            for (let i = 0; i < combined.length; i++) {
-                hash = (hash << 5) - hash + combined.charCodeAt(i);
-                hash |= 0;
-            }
-            distanceKm = Math.round((Math.abs(hash % 60) / 10 + 2.0) * 10) / 10;
+        const coordsA = await getCoordinates(pickup_address);
+        const coordsB = await getCoordinates(destination_address);
+
+        if (coordsA && coordsB) {
+            try {
+                const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordsA.lon},${coordsA.lat};${coordsB.lon},${coordsB.lat}?overview=false`;
+                const response = await fetch(osrmUrl);
+                const data = await response.json();
+                
+                if (data.routes && data.routes.length > 0) {
+                    distanceKm = Math.round((data.routes[0].distance / 1000) * 10) / 10;
+                    durationMin = Math.ceil(data.routes[0].duration / 60);
+                }
+            } catch (err) {}
         }
 
-        const durationMin = Math.max(Math.ceil((distanceKm / 18) * 60), 4);
         const requestedClasses = classes || ["econom", "business", "comfortplus"];
         const tariffsResponse = [];
 
         requestedClasses.forEach(cls => {
             let startPrice = 35;
-            let perKm = 4.5;
+            let perKm = 4.0;
             
             if (cls.includes("comfort") || cls.includes("business")) {
                 startPrice = 50;
-                perKm = 6.0;
+                perKm = 5.5;
             }
             if (cls.includes("vip") || cls.includes("plus")) {
                 startPrice = 70;
-                perKm = 8.0;
+                perKm = 7.0;
             }
 
-            let rawPrice = startPrice + (distanceKm * perKm) + (durationMin * 1.2);
+            let rawPrice = startPrice + (distanceKm * perKm) + (durationMin * 1.0);
             let price = Math.round(rawPrice);
             if (price < 45) price = 45;
 
@@ -61,16 +72,10 @@ app.post('/api/v2/yandex/overlay-route', (req, res) => {
             });
         });
 
-        res.json({
-            status: "success",
-            tariffs: tariffsResponse
-        });
-
+        res.json({ status: "success", tariffs: tariffsResponse });
     } catch (e) {
         res.status(500).json({ status: "error", message: e.message });
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server on port ${PORT}`));
