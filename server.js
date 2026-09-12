@@ -4,14 +4,48 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
+// Функция точного геокодирования адреса через OpenStreetMap для Кишинёва
+async function getCoordinatesFromAddress(address) {
+    try {
+        if (!address) return null;
+        const clean = address.split('/')[0].trim();
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(clean + ", Кишинёв, Молдова")}&format=json&limit=1`;
+        
+        const response = await fetch(url, {
+            headers: { 'User-Agent': 'TaxiRadarBackend/1.0' }
+        });
+        const data = await response.json();
+        
+        if (data && data.length > 0) {
+            return {
+                lat: parseFloat(data[0].lat),
+                lon: parseFloat(data[0].lon)
+            };
+        }
+    } catch (e) {
+        console.error("Ошибка геокодирования:", e.message);
+    }
+    return null;
+}
+
 app.post('/api/v2/yandex/overlay-route', async (req, res) => {
     try {
-        const { lat, lon, dest_lat, dest_lon, classes } = req.body;
+        let { lat, lon, dest_lat, dest_lon, pickup_address, destination_address, classes } = req.body;
         
-        let distanceKm = 3.5;
-        let durationMin = 10;
+        // Если телефон не прислал координаты, сервер сам находит их по текстам адресов
+        if ((!lat || !lon) && pickup_address) {
+            const coordsA = await getCoordinatesFromAddress(pickup_address);
+            if (coordsA) { lat = coordsA.lat; lon = coordsA.lon; }
+        }
+        if ((!dest_lat || !dest_lon) && destination_address) {
+            const coordsB = await getCoordinatesFromAddress(destination_address);
+            if (coordsB) { dest_lat = coordsB.lat; dest_lon = coordsB.lon; }
+        }
 
-        // Если телефон передал координаты, запрашиваем реальный маршрут по дорогам Кишинёва через OSRM
+        let distanceKm = 2.0;
+        let durationMin = 5;
+
+        // Если есть обе точки, запрашиваем реальный маршрут по дорогам через OSRM
         if (lat && lon && dest_lat && dest_lon) {
             try {
                 const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${lon},${lat};${dest_lon},${dest_lat}?overview=false`;
@@ -20,11 +54,11 @@ app.post('/api/v2/yandex/overlay-route', async (req, res) => {
                 
                 if (data.routes && data.routes.length > 0) {
                     const route = data.routes[0];
-                    distanceKm = Math.round((route.distance / 1000) * 10) / 10; // Переводим метры в километры
-                    durationMin = Math.ceil(route.duration / 60); // Переводим секунды в минуты
+                    distanceKm = Math.round((route.distance / 1000) * 10) / 10;
+                    durationMin = Math.ceil(route.duration / 60);
                 }
             } catch (err) {
-                console.error("Ошибка построения маршрута по карте, используется фоллбэк:", err.message);
+                console.error("Ошибка OSRM маршрута:", err.message);
             }
         }
 
@@ -32,7 +66,7 @@ app.post('/api/v2/yandex/overlay-route', async (req, res) => {
         const tariffsResponse = [];
 
         requestedClasses.forEach(cls => {
-            let startPrice = 35; // Базовая посадка в Кишинёве (лей)
+            let startPrice = 35; // Посадка / минималка в Кишинёве
             let perKm = 4.0;
             
             if (cls.includes("comfort") || cls.includes("business")) {
@@ -44,10 +78,9 @@ app.post('/api/v2/yandex/overlay-route', async (req, res) => {
                 perKm = 7.0;
             }
 
-            // Точная формула расчета стоимости поездки
             let rawPrice = startPrice + (distanceKm * perKm) + (durationMin * 1.0);
             let price = Math.round(rawPrice);
-            if (price < 45) price = 45; // Жесткий порог минимальной стоимости в Кишинёве
+            if (price < 45) price = 45; // Защита минимальной стоимости
 
             tariffsResponse.push({
                 class_: cls,
@@ -69,5 +102,5 @@ app.post('/api/v2/yandex/overlay-route', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Taxi Radar Backend running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
