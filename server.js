@@ -4,35 +4,35 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-app.post('/api/v2/yandex/overlay-route', (req, res) => {
+app.post('/api/v2/yandex/overlay-route', async (req, res) => {
     try {
         const { lat, lon, dest_lat, dest_lon, classes } = req.body;
         
-        let distanceKm = 3.5; // дефолт, если координаты не долетели
-        
-        // Если телефон прислал реальные координаты точек А и Б
+        let distanceKm = 3.5;
+        let durationMin = 10;
+
+        // Если телефон передал координаты, запрашиваем реальный маршрут по дорогам Кишинёва через OSRM
         if (lat && lon && dest_lat && dest_lon) {
-            const R = 6371; // радиус Земли в км
-            const dLat = (dest_lat - lat) * Math.PI / 180;
-            const dLon = (dest_lon - lon) * Math.PI / 180;
-            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                      Math.cos(lat * Math.PI / 180) * Math.cos(dest_lat * Math.PI / 180) *
-                      Math.sin(dLon/2) * Math.sin(dLon/2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            const straightKm = R * c;
-            
-            // Умножаем на коэффициент извилистости дорог Кишинёва (1.35)
-            distanceKm = Math.round(straightKm * 1.35 * 10) / 10;
-            if (distanceKm < 1.0) distanceKm = 1.2; // минимальная дистанция
+            try {
+                const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${lon},${lat};${dest_lon},${dest_lat}?overview=false`;
+                const response = await fetch(osrmUrl);
+                const data = await response.json();
+                
+                if (data.routes && data.routes.length > 0) {
+                    const route = data.routes[0];
+                    distanceKm = Math.round((route.distance / 1000) * 10) / 10; // Переводим метры в километры
+                    durationMin = Math.ceil(route.duration / 60); // Переводим секунды в минуты
+                }
+            } catch (err) {
+                console.error("Ошибка построения маршрута по карте, используется фоллбэк:", err.message);
+            }
         }
 
-        const durationMin = Math.max(Math.ceil((distanceKm / 18) * 60), 3);
         const requestedClasses = classes || ["econom", "business", "comfortplus"];
-        
         const tariffsResponse = [];
 
         requestedClasses.forEach(cls => {
-            let startPrice = 35; // Посадка / минималка в Кишинёве
+            let startPrice = 35; // Базовая посадка в Кишинёве (лей)
             let perKm = 4.0;
             
             if (cls.includes("comfort") || cls.includes("business")) {
@@ -44,9 +44,10 @@ app.post('/api/v2/yandex/overlay-route', (req, res) => {
                 perKm = 7.0;
             }
 
+            // Точная формула расчета стоимости поездки
             let rawPrice = startPrice + (distanceKm * perKm) + (durationMin * 1.0);
             let price = Math.round(rawPrice);
-            if (price < 45) price = 45; // Минимальная стоимость поездки
+            if (price < 45) price = 45; // Жесткий порог минимальной стоимости в Кишинёве
 
             tariffsResponse.push({
                 class_: cls,
@@ -68,5 +69,5 @@ app.post('/api/v2/yandex/overlay-route', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Taxi Radar Backend running on port ${PORT}`);
 });
