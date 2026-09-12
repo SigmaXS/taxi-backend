@@ -6,39 +6,47 @@ const PORT = process.env.PORT || 3000;
 
 app.post('/api/v2/yandex/overlay-route', (req, res) => {
     try {
-        const { pickup_address, destination_address, classes } = req.body;
+        const { lat, lon, dest_lat, dest_lon, classes } = req.body;
         
-        // Базовый расчет расстояния в зависимости от длины названий улиц (заглушка умнее: от 2.5 до 9 км)
-        let distanceKm = 3.5;
-        const pLen = (pickup_address || "").length;
-        const dLen = (destination_address || "").length;
-        if (pLen > 0 && dLen > 0) {
-            // Примерная оценка расстояния по городу на основе хэша строк
-            distanceKm = Math.min(Math.max(((pLen + dLen) % 7) + 2.0, 2.5), 9.0);
-            distanceKm = Math.round(distanceKm * 10) / 10;
+        let distanceKm = 3.5; // дефолт, если координаты не долетели
+        
+        // Если телефон прислал реальные координаты точек А и Б
+        if (lat && lon && dest_lat && dest_lon) {
+            const R = 6371; // радиус Земли в км
+            const dLat = (dest_lat - lat) * Math.PI / 180;
+            const dLon = (dest_lon - lon) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat * Math.PI / 180) * Math.cos(dest_lat * Math.PI / 180) *
+                      Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            const straightKm = R * c;
+            
+            // Умножаем на коэффициент извилистости дорог Кишинёва (1.35)
+            distanceKm = Math.round(straightKm * 1.35 * 10) / 10;
+            if (distanceKm < 1.0) distanceKm = 1.2; // минимальная дистанция
         }
 
-        const durationMin = Math.max(Math.ceil((distanceKm / 18) * 60), 4);
+        const durationMin = Math.max(Math.ceil((distanceKm / 18) * 60), 3);
         const requestedClasses = classes || ["econom", "business", "comfortplus"];
         
         const tariffsResponse = [];
 
         requestedClasses.forEach(cls => {
-            // Базовые тарифы для Кишинёва
-            let startPrice = 30; // Эконом
+            let startPrice = 35; // Посадка / минималка в Кишинёве
             let perKm = 4.0;
             
             if (cls.includes("comfort") || cls.includes("business")) {
-                startPrice = 45;
+                startPrice = 50;
                 perKm = 5.5;
             }
             if (cls.includes("vip") || cls.includes("plus")) {
-                startPrice = 65;
+                startPrice = 70;
                 perKm = 7.0;
             }
 
-            const rawPrice = startPrice + ((distanceKm - 2) > 0 ? (distanceKm - 2) * perKm : 0) + (durationMin * 1.2);
-            const price = Math.round(rawPrice);
+            let rawPrice = startPrice + (distanceKm * perKm) + (durationMin * 1.0);
+            let price = Math.round(rawPrice);
+            if (price < 45) price = 45; // Минимальная стоимость поездки
 
             tariffsResponse.push({
                 class_: cls,
